@@ -38,7 +38,7 @@ if "messaggi" not in st.session_state:
     st.session_state.messaggi = [
         {
             "role": "system",
-            "content": "Sei un assistente gentile. Rispondi in modo semplice, chiaro e breve, nella lingua dell'utente.",
+            "content": "Sei un assistente gentile. Puoi cercare su internet per dare informazioni aggiornate. Rispondi in modo semplice, chiaro e breve, nella lingua dell'utente. ",
         }
     ]
 
