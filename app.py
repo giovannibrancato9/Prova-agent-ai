@@ -8,7 +8,7 @@ from google.genai import types
 
 # ---------- Impostazioni ----------
 # Se un giorno non funziona più, cerca il nome aggiornato su aistudio.google.com
-MODELLO = "gemini-2.5-flash"
+MODELLO = "gemini-3.8-flash"
 FUSO = ZoneInfo("Europe/Rome")
 
 st.set_page_config(page_title="Chat AI", page_icon="💬", layout="centered")
