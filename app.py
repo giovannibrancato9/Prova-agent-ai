@@ -4,7 +4,7 @@ from openai import OpenAI
 
 # ---------- Impostazioni ----------
 # Modello gratuito su Groq. Se non funziona più, scegline uno aggiornato su console.groq.com
-MODELLO = "llama-3.3-70b-versatile"
+MODELLO = "openai/gpt-oss-20b" 
 
 st.set_page_config(page_title="Chat AI", page_icon="💬", layout="centered")
 
