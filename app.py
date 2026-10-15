@@ -1,14 +1,18 @@
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import streamlit as st
-from openai import OpenAI
+from google import genai
+from google.genai import types
 
 # ---------- Impostazioni ----------
-# Modello gratuito su Groq. Se non funziona più, scegline uno aggiornato su console.groq.com
-MODELLO = "openai/gpt-oss-20b" 
+# Se un giorno non funziona più, cerca il nome aggiornato su aistudio.google.com
+MODELLO = "gemini-3.1-flash-lite"
+FUSO = ZoneInfo("Europe/Rome")
 
 st.set_page_config(page_title="Chat AI", page_icon="💬", layout="centered")
 
-# ---------- Stile ----------
 st.markdown(
     """
     <style>
@@ -24,35 +28,38 @@ st.title("💬 Chat AI")
 st.markdown('<div class="sottotitolo">Fammi una domanda, ti rispondo!</div>', unsafe_allow_html=True)
 
 # ---------- Chiave API ----------
-api_key = st.secrets.get("GROQ_API_KEY", None) if hasattr(st, "secrets") else None
-api_key = api_key or os.environ.get("GROQ_API_KEY")
+api_key = st.secrets.get("GEMINI_API_KEY", None) if hasattr(st, "secrets") else None
+api_key = api_key or os.environ.get("GEMINI_API_KEY")
 
 if not api_key:
-    st.error("Manca la chiave API. Aggiungi GROQ_API_KEY (vedi istruzioni).")
+    st.error("Manca la chiave API. Aggiungi GEMINI_API_KEY nei Secrets.")
     st.stop()
 
-client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+client = genai.Client(api_key=api_key)
+
+
+def istruzioni():
+    adesso = datetime.now(FUSO).strftime("%A %d/%m/%Y, ore %H:%M")
+    return (
+        "Sei un assistente gentile. Rispondi in modo semplice, chiaro e breve, "
+        "nella lingua dell'utente. Per notizie, meteo e dati attuali cerca su internet. "
+        f"Data e ora attuali (Italia): {adesso}."
+    )
+
 
 # ---------- Memoria della conversazione ----------
 if "messaggi" not in st.session_state:
-    st.session_state.messaggi = [
-        {
-            "role": "system",
-            "content": "Sei un assistente gentile. Puoi cercare su internet per dare informazioni aggiornate. Rispondi in modo semplice, chiaro e breve, nella lingua dell'utente. ",
-        }
-    ]
+    st.session_state.messaggi = []
 
 with st.sidebar:
     st.header("Opzioni")
     if st.button("🗑️ Nuova chat", use_container_width=True):
-        st.session_state.messaggi = st.session_state.messaggi[:1]
+        st.session_state.messaggi = []
         st.rerun()
 
-# ---------- Mostra la cronologia ----------
 for m in st.session_state.messaggi:
-    if m["role"] != "system":
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
 
 # ---------- Nuova domanda ----------
 domanda = st.chat_input("Scrivi qui la tua domanda...")
@@ -64,16 +71,27 @@ if domanda:
 
     with st.chat_message("assistant"):
         try:
-            flusso = client.chat.completions.create(
-                model=MODELLO,
-                messages=st.session_state.messaggi,
-                stream=True,
+            contenuti = [
+                types.Content(
+                    role="user" if m["role"] == "user" else "model",
+                    parts=[types.Part(text=m["content"])],
+                )
+                for m in st.session_state.messaggi
+            ]
+
+            config = types.GenerateContentConfig(
+                system_instruction=istruzioni(),
+                tools=[types.Tool(google_search=types.GoogleSearch())],
             )
-            risposta = st.write_stream(
-                chunk.choices[0].delta.content or ""
-                for chunk in flusso
-                if chunk.choices
-            )
+
+            def genera():
+                for chunk in client.models.generate_content_stream(
+                    model=MODELLO, contents=contenuti, config=config
+                ):
+                    if chunk.text:
+                        yield chunk.text
+
+            risposta = st.write_stream(genera())
         except Exception as e:
             risposta = f"⚠️ Errore: {e}"
             st.markdown(risposta)
