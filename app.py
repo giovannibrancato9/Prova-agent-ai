@@ -12,10 +12,12 @@ Come funziona (pipeline RAG):
 5. La risposta si può scaricare in .md o .txt.
 
 Requisiti: streamlit, google-genai, ddgs   (vedi requirements.txt)
-Opzionale: un file logo.png nella stessa cartella di app.py (avatar dell'assistente).
+Opzionali, nella stessa cartella di app.py: logo.png (logo CXI nella barra laterale)
+e agente.png (mascotte, avatar dell'assistente). Se mancano, l'app usa delle icone.
 """
 
 import os
+import time
 import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -39,7 +41,8 @@ except ImportError:  # pragma: no cover
 MODELLI = ["gemini-3.1-flash-lite", "gemini-3.8-flash"]
 
 FUSO = ZoneInfo("Europe/Rome")
-LOGO_PATH = "logo.png"
+LOGO_PATH = "logo.png"      # logo CXI: in alto a sinistra nella barra laterale
+AVATAR_PATH = "agente.png"  # mascotte: avatar dell'assistente quando scrive
 
 NAVY = "#0B2545"
 ORANGE = "#F26522"
@@ -93,6 +96,41 @@ st.markdown(
     [data-testid="stChatInput"] {{ border: 2px solid {ORANGE}; border-radius: 12px; }}
 
     .block-container {{ padding-top: 2rem; max-width: 1100px; }}
+
+    /* ---- Tema chiaro forzato: il blu navy si legge bene solo su sfondo chiaro ----
+       (senza questo, su telefoni in modalità scura il titolo blu finiva su fondo nero) */
+    :root {{ color-scheme: light; }}
+    .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"],
+    [data-testid="stBottom"], [data-testid="stBottom"] > div {{ background-color: #FFFFFF !important; }}
+    [data-testid="stMain"] {{ color: {NAVY}; }}
+
+    /* Barra in alto blu navy con icone bianche */
+    [data-testid="stHeader"] {{ background-color: {NAVY} !important; }}
+    [data-testid="stHeader"] * {{ color: #FFFFFF !important; }}
+
+    /* Titolo principale più marcato */
+    [data-testid="stMain"] h1 {{ color: {NAVY} !important; font-weight: 800; }}
+
+    /* Messaggi della chat su fondo grigio chiaro con testo blu navy */
+    [data-testid="stChatMessage"] {{ background-color: #F3F5F9 !important; border-radius: 12px; }}
+    [data-testid="stChatMessage"] p, [data-testid="stChatMessage"] li,
+    [data-testid="stChatMessage"] td, [data-testid="stChatMessage"] strong,
+    [data-testid="stChatMessage"] span {{ color: {NAVY} !important; }}
+
+    /* Didascalie e avvisi leggibili sul fondo chiaro (solo area principale) */
+    [data-testid="stMain"] [data-testid="stCaptionContainer"],
+    [data-testid="stMain"] [data-testid="stCaptionContainer"] p {{ color: #5B6B82 !important; }}
+    [data-testid="stAlert"] *, [data-testid="stSpinner"] * {{ color: {NAVY} !important; }}
+
+    /* Casella di scrittura chiara */
+    [data-testid="stChatInput"], [data-testid="stChatInput"] > div,
+    [data-testid="stChatInput"] textarea {{ background-color: #FFFFFF !important; color: {NAVY} !important; }}
+    [data-testid="stChatInput"] textarea::placeholder {{ color: #6B7A90 !important; }}
+
+    /* Campo della chiave API leggibile sulla barra laterale blu */
+    [data-testid="stSidebar"] [data-baseweb="input"],
+    [data-testid="stSidebar"] [data-baseweb="input"] > div,
+    [data-testid="stSidebar"] input {{ background-color: #FFFFFF !important; color: {NAVY} !important; }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -127,7 +165,7 @@ if "prompt_in_attesa" not in st.session_state:
 
 with st.sidebar:
     if os.path.exists(LOGO_PATH):
-        st.image(LOGO_PATH, use_container_width=True)
+        st.image(LOGO_PATH, width=90)  # logo CXI in alto a sinistra
     st.markdown("## CXI Pre-Sales Agent")
 
     # --- Nuova chat ---
@@ -270,25 +308,33 @@ def genera_risposta(messaggi, contesto_web, errori):
     client = genai.Client(api_key=api_key)
 
     for modello in MODELLI:
-        inviato = False
-        try:
-            for chunk in client.models.generate_content_stream(
-                model=modello, contents=contenuti, config=config
-            ):
-                if chunk.text:
-                    inviato = True
-                    yield chunk.text
-            return
-        except Exception as e:
-            errori.append(f"{modello}: {e}")
-            if inviato:  # risposta già iniziata: non ripartire da capo
+        # Fino a 3 tentativi per modello: il 503 è un sovraccarico temporaneo di Google
+        for tentativo in range(3):
+            inviato = False
+            try:
+                for chunk in client.models.generate_content_stream(
+                    model=modello, contents=contenuti, config=config
+                ):
+                    if chunk.text:
+                        inviato = True
+                        yield chunk.text
                 return
-    yield "⚠️ Nessun modello ha risposto.\n\n" + "\n\n".join(errori)
+            except Exception as e:
+                errori.append(f"{modello} (tentativo {tentativo + 1}): {e}")
+                if inviato:  # risposta già iniziata: non ripartire da capo
+                    return
+                if "503" in str(e) or "UNAVAILABLE" in str(e):
+                    time.sleep(3 * (tentativo + 1))  # attende 3, 6 secondi e riprova
+                    continue
+                break  # altri errori (quota, modello inesistente): passa al modello successivo
+    yield "⚠️ Nessun modello ha risposto. Riprova tra qualche minuto.\n\n" + "\n\n".join(errori)
 
 
 def avatar(ruolo):
-    """Avatar: logo.png per l'assistente, emoji per l'utente."""
+    """Avatar: la mascotte (agente.png) per l'assistente, emoji per l'utente."""
     if ruolo == "assistant":
+        if os.path.exists(AVATAR_PATH):
+            return AVATAR_PATH
         return LOGO_PATH if os.path.exists(LOGO_PATH) else "🧭"
     return "🧑‍💼"
 
@@ -353,4 +399,3 @@ if prompt and prompt.strip():
     # Ricarica: aggiorna la cronologia in sidebar e mostra i bottoni di download
     st.rerun()
 
- 
