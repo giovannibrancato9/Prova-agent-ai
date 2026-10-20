@@ -3,3 +3,4 @@ google-genai
 ddgs
 requests
 beautifulsoup4
+python-docx
