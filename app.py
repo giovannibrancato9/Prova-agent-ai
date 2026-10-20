@@ -627,7 +627,7 @@ Regole:
 - "citazione" = frase COPIATA IDENTICA dall'evidenza con quell'id (massimo 200 caratteri), che contiene il dato. Se non trovi una frase che lo supporta, metti null al posto dell'intero campo: non inventare mai.
 - "id" = numero dell'evidenza da cui copi la citazione.
 - "valore" della dimensione: copia il numero esattamente come scritto nella citazione (es. "800.000" oppure "4,6 milioni"), senza convertirlo.
-- Dimensione richiesta dall'utente: {piano["tipo_dimensione"]}. Usa "metrica": "clienti" se il numero indica clienti, "fatturato" per ricavi o fatturato. "ambito": "totale" SOLO se il numero è la base clienti (o i ricavi) complessiva dell'azienda; "parziale" se riguarda un sottoinsieme (clienti di una sola offerta, nuovi clienti dell'anno, clienti di una sola società, area o prodotto del gruppo).
+- Dimensione richiesta dall'utente: {piano["tipo_dimensione"]}. Usa "metrica": "clienti" se il numero indica clienti, "fatturato" per ricavi o fatturato. "ambito": "totale" SOLO se il numero è la base clienti (o i ricavi) complessiva dell'azienda, cioè i ricavi CONSOLIDATI del gruppo; "parziale" se riguarda un sottoinsieme (clienti di una sola offerta, nuovi clienti dell'anno, clienti di una sola società, area, divisione o prodotto del gruppo) oppure il bilancio della sola società capogruppo/d'esercizio quando esiste un consolidato (es. "Leonardo S.p.A." singola contro "Gruppo Leonardo"), oppure ordini, EBITDA o utile al posto dei ricavi. Se il numero vale 0 o è chiaramente un dato mancante (es. "0,00" nelle banche dati), metti null: non è un fatturato. Se il valore è incoerente con le altre evidenze (es. fatturato zero con centinaia di dipendenti, o valori molto diversi per lo stesso anno), scegli il consolidato più autorevole oppure null.
 - Se ci sono più valori per la stessa azienda, scegli il più recente e autorevole (comunicato ufficiale, bilancio, stampa economica); a parità di anno dai la precedenza alle evidenze marcate FONTE UFFICIALE/BANCA DATI (Confindustria, Ufficio Camerale, Atoka, Reportaziende). Questi siti spesso mostrano solo fasce o dati parziali: se il valore è una fascia o riguarda solo una parte, usa "ambito": "parziale".
 - Sede: città o indirizzo della sede legale o principale dell'azienda che vende.
 - "notizie": fino a 3 fatti recenti (acquisizioni, accordi, nuove offerte, rebranding, aperture, governance). "tipo": "clienti" se riguarda vendita, clienti, offerte o canali di contatto e assistenza; "infrastruttura" se riguarda reti, impianti o produzione senza effetto diretto sul rapporto con i clienti; "altro" negli altri casi.
@@ -710,6 +710,12 @@ def stato_soglia(piano, dim):
     return "SOTTO SOGLIA (da escludere)"
 
 
+def valore_nullo(s):
+    """True se il valore non ha nessuna cifra diversa da zero (es. '€0,00'): è un dato mancante, non un fatturato."""
+    cifre = re.findall(r"\d", str(s or ""))
+    return bool(cifre) and not any(c != "0" for c in cifre)
+
+
 def valida_schede(grezzo, evidenze):
     """Tiene solo i fatti con citazione verificata. Restituisce (schede, numero di fatti scartati)."""
     per_id = {e["id"]: e for e in evidenze}
@@ -738,6 +744,9 @@ def valida_schede(grezzo, evidenze):
             scheda["sede"] = {"valore": str(sede["valore"]).strip(), "id": i}
         dim = a.get("dimensione")
         i = controlla(dim, "valore")
+        if i and valore_nullo(dim.get("valore")):  # "0,00" nei siti di banche dati = dato assente
+            scartati += 1
+            i = None
         if i:
             scheda["dimensione"] = {
                 "valore": str(dim["valore"]).strip(),
@@ -862,7 +871,7 @@ Numero minimo di aziende da proporre: {n}.
 Apri con una riga di riepilogo: quante aziende proponi e quante hanno dati completamente verificati.
 
 ### 1. Lista New Names
-Tabella con colonne: Azienda | Sede | Dimensione | Altri dati chiave | Verifica criteri | Fonte. In "Dimensione" ricopia il dato della scheda indicando metrica, anno e se è un dato parziale. In "Verifica criteri" elenca ogni criterio della richiesta con ✔ (verificato), ? (da confermare) o ✘ (non rispettato); per la soglia ricopia l'ESITO SOGLIA; il criterio sui grandi volumi di contatti è ✔ solo se le evidenze mostrano una base clienti o volumi di contatto elevati, altrimenti ?. Nella colonna Fonte solo riferimenti [n]. Ordina le righe per priorità (come nella sezione 2).
+Tabella con colonne: Azienda | Sede | Dimensione | Altri dati chiave | Verifica criteri | Fonte. In "Dimensione" ricopia il dato della scheda indicando metrica, anno e se è un dato parziale. In "Verifica criteri" verifica anche il criterio di AREA GEOGRAFICA sulla sede della scheda: se la sede legale è fuori dall'area richiesta (es. sede a Roma per una richiesta "Nord Italia"), segna ✘ e dillo nella colonna, anche se l'azienda ha stabilimenti nell'area; includila solo come alternativa "da valutare" dopo le aziende con sede nell'area. Elenca ogni criterio della richiesta con ✔ (verificato), ? (da confermare) o ✘ (non rispettato); per la soglia ricopia l'ESITO SOGLIA; il criterio sui grandi volumi di contatti è ✔ solo se le evidenze mostrano una base clienti o volumi di contatto elevati, altrimenti ?. Nella colonna Fonte solo riferimenti [n]. Ordina le righe per priorità (come nella sezione 2).
 
 ### 2. Clusterizzazione e Priorità
 Tabella ordinata per Totale decrescente, con colonne: Priorità | Azienda | Cluster | Cambiamento | Accessibilità | Volume | Totale. Punteggi da 1 a 3 per ogni criterio:
