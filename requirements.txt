@@ -4,3 +4,4 @@ ddgs
 requests
 beautifulsoup4
 python-docx
+openpyxl
