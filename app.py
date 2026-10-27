@@ -23,7 +23,7 @@ Come funziona (pipeline in 4 passi, pensata per non inventare dati):
               dai riferimenti [n] realmente citati, quindi gli URL sono sempre quelli
               consultati davvero. Un controllo automatico segnala riferimenti non validi.
 
-Tracciabilità (auditability): ogni risposta si scarica come documento Word (.docx, con tabelle) insieme a richiesta,
+Tracciabilità (auditability): ogni risposta si scarica come documento Word (.docx) e come Excel (.xlsx) con le tabelle insieme a richiesta,
 data, modello, ricerche eseguite e fonti consultate.
 
 Requisiti: vedi requirements.txt
@@ -66,6 +66,14 @@ try:
     from docx.shared import Cm, Pt, RGBColor
 except ImportError:  # pragma: no cover
     Document = None
+
+# Foglio Excel scaricabile (se la libreria manca, il pulsante non compare)
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+except ImportError:  # pragma: no cover
+    Workbook = None
 
 # La libreria di ricerca è stata rinominata: proviamo prima il nome nuovo.
 try:
@@ -1259,6 +1267,108 @@ def crea_docx(m):
     return buf.getvalue()
 
 
+# -----------------------------------------------------------------------------
+# FOGLIO EXCEL (.xlsx): una scheda per ogni tabella del report, modificabile
+# -----------------------------------------------------------------------------
+
+NOME_FILE_EXCEL = "Tabelle_PreSales_Intelligence_CXI.xlsx"
+
+
+def _pulisci_cella(testo):
+    testo = re.sub(r"<br\s*/?>", "\n", str(testo or ""))
+    return testo.replace("**", "").replace("`", "").strip()
+
+
+def _nome_scheda(titolo, usati):
+    """Nome valido per una scheda Excel (max 31 caratteri, senza []:*?/\\), senza doppioni."""
+    base = re.sub(r"[\[\]:*?/\\]", " ", titolo.replace("#", "")).strip()
+    base = re.sub(r"\s+", " ", base)[:31] or "Tabella"
+    nome, k = base, 2
+    while nome.lower() in usati:
+        nome = f"{base[:27]} {k}"
+        k += 1
+    usati.add(nome.lower())
+    return nome
+
+
+def _scrivi_tabella_excel(ws, righe, riga0=1):
+    """Scrive una tabella con intestazione blu navy, bordi, righe alternate, filtri e colonne dimensionate."""
+    sottile = Side(style="thin", color="D5DAE3")
+    bordo = Border(left=sottile, right=sottile, top=sottile, bottom=sottile)
+    colonne = max(len(r) for r in righe)
+    larghezze = [10] * colonne
+    for ri, riga in enumerate(righe):
+        for ci in range(colonne):
+            testo = _pulisci_cella(riga[ci]) if ci < len(riga) else ""
+            valore = int(testo) if ri > 0 and re.fullmatch(r"\d{1,6}", testo) else testo
+            c = ws.cell(row=riga0 + ri, column=ci + 1, value=valore)
+            c.alignment = Alignment(wrap_text=True, vertical="top")
+            c.border = bordo
+            if ri == 0:
+                c.font = Font(bold=True, color="FFFFFF")
+                c.fill = PatternFill("solid", fgColor=NAVY.lstrip("#"))
+                c.alignment = Alignment(wrap_text=True, vertical="center")
+            elif ri % 2 == 0:
+                c.fill = PatternFill("solid", fgColor="F3F5F9")
+            lunghezza = max((len(x) for x in str(testo).split("\n")), default=0)
+            larghezze[ci] = max(larghezze[ci], min(lunghezza + 2, 55))
+    for ci, w in enumerate(larghezze, 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+    ws.freeze_panes = ws.cell(row=riga0 + 1, column=1)
+    ws.auto_filter.ref = f"A{riga0}:{get_column_letter(colonne)}{riga0 + len(righe) - 1}"
+    ws.sheet_view.showGridLines = False
+
+
+def crea_xlsx(m):
+    """Excel con una scheda per ogni tabella del report e una scheda 'Fonti e ricerche'.
+    Restituisce i byte del file, oppure None se non ci sono tabelle o manca openpyxl."""
+    if Workbook is None:
+        return None
+    contenuto = m["content"].replace(NOTA_FINALE, "")
+    righe_md = contenuto.split("\n")
+    wb = Workbook()
+    wb.remove(wb.active)
+    usati, titolo, i, trovate = set(), "Tabella", 0, 0
+    while i < len(righe_md):
+        riga = righe_md[i]
+        h = re.match(r"^#{1,4}\s+(.*)$", riga.strip())
+        if h:
+            titolo = h.group(1).replace("**", "")
+        if riga.lstrip().startswith("|"):
+            blocco = []
+            while i < len(righe_md) and righe_md[i].lstrip().startswith("|"):
+                blocco.append(righe_md[i])
+                i += 1
+            tabella = _righe_tabella(blocco)
+            if tabella:
+                ws = wb.create_sheet(_nome_scheda(titolo, usati))
+                _scrivi_tabella_excel(ws, tabella)
+                trovate += 1
+            continue
+        i += 1
+    if not trovate:
+        return None
+    t = m.get("trace") or {}
+    ws = wb.create_sheet(_nome_scheda("Fonti e ricerche", usati))
+    righe = [["N.", "Fonte (link)"]] + [[str(n), u] for n, u in t.get("fonti", [])]
+    if len(righe) > 1:
+        _scrivi_tabella_excel(ws, righe)
+        for r in range(2, len(righe) + 1):
+            c = ws.cell(row=r, column=2)
+            c.hyperlink = str(c.value)
+            c.font = Font(color="0563C1", underline="single")
+        ws.column_dimensions["B"].width = 90
+        base = len(righe) + 2
+    else:
+        base = 1
+    ws.cell(row=base, column=1, value="Ricerche eseguite").font = Font(bold=True, color=NAVY.lstrip("#"))
+    for k, q in enumerate(t.get("ricerche", []), 1):
+        ws.cell(row=base + k, column=1, value=q)
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def avatar(ruolo):
     """Avatar: la mascotte (agente.png) per l'assistente, emoji per l'utente."""
     if ruolo == "assistant":
@@ -1294,8 +1404,13 @@ for i, m in enumerate(sessione["messaggi"]):
                 dati_docx = crea_docx(m)
             except Exception:
                 dati_docx = None
+            try:
+                dati_xlsx = crea_xlsx(m)
+            except Exception:
+                dati_xlsx = None
+            c1, c2, _ = st.columns([2, 2, 1])
             if dati_docx:
-                st.download_button(
+                c1.download_button(
                     "📄 Scarica il report Word modificabile",
                     dati_docx, file_name=NOME_FILE_WORD,
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1303,7 +1418,15 @@ for i, m in enumerate(sessione["messaggi"]):
                     help=f"File: {NOME_FILE_WORD}",
                 )
             else:
-                st.caption("Il documento Word non è disponibile (manca la libreria python-docx).")
+                c1.caption("Il documento Word non è disponibile (manca la libreria python-docx).")
+            if dati_xlsx:
+                c2.download_button(
+                    "📊 Scarica le tabelle in Excel",
+                    dati_xlsx, file_name=NOME_FILE_EXCEL,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dl_xlsx_{st.session_state.sessione_corrente}_{i}",
+                    help=f"File: {NOME_FILE_EXCEL}",
+                )
 
 # --- Nuova richiesta: da chat_input oppure da bottone rapido ---
 digitato = st.chat_input("Descrivi il target che cerchi (settore, area, dimensione)...")
