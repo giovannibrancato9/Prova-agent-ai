@@ -40,7 +40,6 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from html import escape
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
@@ -164,22 +163,16 @@ st.markdown(
     [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {{ color: #FFFFFF !important; }}
     [data-testid="stSidebar"] h1 {{ border-bottom: none; }}
 
-    /* Bottoni arancioni con testo bianco (selettori validi per le diverse versioni di Streamlit) */
-    .stButton button, .stDownloadButton button,
-    [data-testid="stButton"] button, [data-testid="stDownloadButton"] button,
-    button[data-testid="stBaseButton-secondary"], button[data-testid="stBaseButton-primary"] {{
-        background-color: {ORANGE} !important; color: #FFFFFF !important; border: none !important;
+    /* Bottoni arancioni */
+    .stButton > button, .stDownloadButton > button {{
+        background-color: {ORANGE}; color: #FFFFFF; border: none;
         border-radius: 10px; font-weight: 600; transition: all .15s ease-in-out;
     }}
-    .stButton button:hover, .stDownloadButton button:hover,
-    [data-testid="stButton"] button:hover, [data-testid="stDownloadButton"] button:hover,
-    button[data-testid="stBaseButton-secondary"]:hover, button[data-testid="stBaseButton-primary"]:hover {{
-        background-color: #D9531A !important; color: #FFFFFF !important; transform: translateY(-1px);
+    .stButton > button:hover, .stDownloadButton > button:hover {{
+        background-color: #D9531A; color: #FFFFFF; transform: translateY(-1px);
     }}
-    .stButton button *, .stDownloadButton button *,
-    [data-testid="stButton"] button *, [data-testid="stDownloadButton"] button *,
-    button[data-testid="stBaseButton-secondary"] *, button[data-testid="stBaseButton-primary"] * {{
-        color: #FFFFFF !important;
+    .stButton > button:focus, .stDownloadButton > button:focus {{
+        color: #FFFFFF; box-shadow: 0 0 0 2px {NAVY};
     }}
 
     /* Tabelle markdown più pulite */
@@ -326,45 +319,6 @@ def testo_attesa(secondi):
         return f"circa {secondi} secondi"
     m, sec = divmod(secondi, 60)
     return f"circa {m} min" + (f" e {sec} s" if sec else "")
-
-
-class Avanzamento:
-    """Riquadro di avanzamento disegnato dall'app in HTML: sfondo blu navy e testo bianco, sempre,
-    qualunque sia il tema di Streamlit (st.status prendeva i colori del tema, anche scuri)."""
-
-    def __init__(self, titolo):
-        self.box = st.empty()
-        self.titolo, self.righe, self.fine = titolo, [], False
-        self._disegna()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        return False
-
-    def write(self, testo):
-        self.righe.append(str(testo))
-        self._disegna()
-
-    def update(self, label=None, **_):
-        """Chiamato a lavoro finito: il riquadro si chiude lasciando solo il titolo."""
-        if label:
-            self.titolo = label
-        self.fine = True
-        self._disegna()
-
-    def _disegna(self):
-        b = "color:#FFFFFF !important;"
-        stile = f"background:{NAVY};border-radius:10px;padding:.7rem 1rem;margin:.3rem 0;{b}"
-        elenco = "".join(f'<li style="{b}">{escape(r)}</li>' for r in self.righe)
-        lista = f'<ul style="margin:.4rem 0 0 1.1rem;{b}">{elenco}</ul>' if elenco else ""
-        if self.fine:
-            html_ = (f'<details style="{stile}"><summary style="cursor:pointer;{b}">'
-                     f'✅ {escape(self.titolo)}</summary>{lista}</details>')
-        else:
-            html_ = f'<div style="{stile}"><b style="{b}">⏳ {escape(self.titolo)}</b>{lista}</div>'
-        self.box.markdown(html_, unsafe_allow_html=True)
 
 
 def oggi_testo():
@@ -1043,7 +997,7 @@ Tabella ordinata per Totale decrescente, con colonne: Priorità | Azienda | Clus
 Sotto la tabella scrivi in una riga le soglie usate per il Volume, indica per quali aziende il Volume è 2 solo perché il dato manca o è parziale e, per ogni azienda, il fatto che giustifica il punteggio di Cambiamento con la fonte [n].
 
 ### 3. Informazioni Chiave
-Tabella con colonne: Azienda | Fatto o notizia | Anno | Tipo (M&A, notizia o iniziativa) | Rilevanza per il bisogno del cliente CXI | Fonte. Una riga per ogni fatto (da 1 a 3 per azienda): M&A, notizie recenti e iniziative rilevanti, ciascuno con anno e fonte [n].
+Per ogni azienda 1-3 punti con M&A, notizie recenti e iniziative rilevanti per il bisogno del cliente CXI, ciascuno con anno e fonte [n].
 
 ### 4. Interlocutore (Buyer Persona)
 Tabella dei 3 ruoli aziendali da contattare, con colonne: Ruolo | Peso nella decisione | Cosa gli interessa | Primo messaggio utile. I ruoli sono suggerimenti basati sul tipo di azienda e sul bisogno espresso: non indicare nomi di persone. Sotto la tabella, per ogni azienda, un "first message hook" personalizzato di 2 righe, ancorato a un fatto verificato con [n]; non usare come aggancio operazioni su reti, impianti o infrastrutture che non toccano i clienti.
@@ -1365,23 +1319,6 @@ def _scrivi_tabella_excel(ws, righe, riga0=1):
     ws.sheet_view.showGridLines = False
 
 
-def _righe_da_testo(righe):
-    """Da un elenco puntato ('- **Azienda:** testo') a righe [Voce, Dettaglio]."""
-    out, voce = [["Voce", "Dettaglio"]], ""
-    for riga in righe:
-        testo = re.sub(r"^\s*[-*]\s+", "", riga).strip()
-        if not testo:
-            continue
-        m = re.match(r"^\*\*(.+?)\*\*:?\s*(.*)$", testo)
-        if m:
-            voce = m.group(1).strip().rstrip(":")
-            testo = m.group(2).strip()
-            if not testo:
-                continue
-        out.append([voce, testo])
-    return out if len(out) > 1 else None
-
-
 def crea_xlsx(m):
     """Excel con una scheda per ogni tabella del report e una scheda 'Fonti e ricerche'.
     Restituisce i byte del file, oppure None se non ci sono tabelle o manca openpyxl."""
@@ -1391,38 +1328,24 @@ def crea_xlsx(m):
     righe_md = contenuto.split("\n")
     wb = Workbook()
     wb.remove(wb.active)
-    usati, trovate = set(), 0
-    sezioni, corrente = [], {"titolo": "Tabella", "righe": []}
-    for riga in righe_md:
+    usati, titolo, i, trovate = set(), "Tabella", 0, 0
+    while i < len(righe_md):
+        riga = righe_md[i]
         h = re.match(r"^#{1,4}\s+(.*)$", riga.strip())
         if h:
-            sezioni.append(corrente)
-            corrente = {"titolo": h.group(1).replace("**", ""), "righe": []}
-        else:
-            corrente["righe"].append(riga)
-    sezioni.append(corrente)
-    for sez in sezioni:
-        righe_sez, i, tabelle = sez["righe"], 0, []
-        while i < len(righe_sez):
-            if righe_sez[i].lstrip().startswith("|"):
-                blocco = []
-                while i < len(righe_sez) and righe_sez[i].lstrip().startswith("|"):
-                    blocco.append(righe_sez[i])
-                    i += 1
-                tab = _righe_tabella(blocco)
-                if tab:
-                    tabelle.append(tab)
-                continue
-            i += 1
-        # sezione numerata scritta come elenco (senza tabella): diventa una scheda Voce | Dettaglio
-        if not tabelle and re.match(r"^\d+\.", sez["titolo"]) and "font" not in sez["titolo"].lower():
-            tab = _righe_da_testo(righe_sez)
-            if tab:
-                tabelle.append(tab)
-        for tab in tabelle:
-            ws = wb.create_sheet(_nome_scheda(sez["titolo"], usati))
-            _scrivi_tabella_excel(ws, tab)
-            trovate += 1
+            titolo = h.group(1).replace("**", "")
+        if riga.lstrip().startswith("|"):
+            blocco = []
+            while i < len(righe_md) and righe_md[i].lstrip().startswith("|"):
+                blocco.append(righe_md[i])
+                i += 1
+            tabella = _righe_tabella(blocco)
+            if tabella:
+                ws = wb.create_sheet(_nome_scheda(titolo, usati))
+                _scrivi_tabella_excel(ws, tabella)
+                trovate += 1
+            continue
+        i += 1
     if not trovate:
         return None
     t = m.get("trace") or {}
@@ -1533,7 +1456,7 @@ if prompt and prompt.strip():
         errori = []
 
         # --- Passi 1 e 2: piano + ricerca web ---
-        with Avanzamento("Analizzo la richiesta...") as stato:
+        with st.status("Analizzo la richiesta...", expanded=True) as stato:
             grezzo = chiama_json(a_contenuti(sessione["messaggi"], 2500), istruzioni_piano(), errori)
             piano = normalizza_piano(leggi_json(grezzo), prompt)
 
