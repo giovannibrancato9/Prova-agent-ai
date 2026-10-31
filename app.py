@@ -46,6 +46,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import streamlit as st
+import streamlit.components.v1 as components  # [TIMER] per il cronometro in tempo reale
 from google import genai
 from google.genai import types
 
@@ -96,6 +97,9 @@ LOGO_PATH = "logo.png"      # logo CXI: in alto a sinistra nella barra laterale
 AVATAR_PATH = "agente.png"  # mascotte: avatar dell'assistente quando scrive
 
 NAVY = "#0B2545"
+# [FIX STILE] Blu più chiaro del navy per il riquadro di avanzamento: il navy scuro su molti schermi
+# sembra nero, e il testo blu non si leggeva. Con questo blu il testo bianco è ben leggibile.
+BLU_AVANZ = "#1D4F91"
 ORANGE = "#F26522"
 
 # Parametri della ricerca
@@ -232,6 +236,15 @@ st.markdown(
         color: #FFFFFF !important; fill: #FFFFFF !important;
     }}
 
+    /* [FIX STILE] Riquadro "Analizzo la richiesta / Ricerca..." (classe .cxi-avanz, vedi Avanzamento).
+       Prima il testo blu navy delle regole "[stChatMessage] p/li/span" vinceva sul bianco e finiva
+       sul fondo navy (che sembra nero). Questa regola ha specificità maggiore: testo SEMPRE bianco
+       su fondo blu, in qualunque tema. */
+    [data-testid="stChatMessage"] .cxi-avanz,
+    [data-testid="stChatMessage"] .cxi-avanz *,
+    .cxi-avanz, .cxi-avanz * {{ color: #FFFFFF !important; }}
+    [data-testid="stChatMessage"] .cxi-avanz {{ background-color: {BLU_AVANZ} !important; }}
+
     /* Casella di scrittura chiara */
     [data-testid="stChatInput"], [data-testid="stChatInput"] > div,
     [data-testid="stChatInput"] textarea {{ background-color: #FFFFFF !important; color: {NAVY} !important; }}
@@ -310,32 +323,45 @@ with st.sidebar:
 # =============================================================================
 
 
-def stima_secondi(piano):
-    """Stima approssimativa dei secondi per fase: ricerca web, estrazione dati, scrittura del report."""
-    n = len(prepara_ricerche(piano))
-    ricerca = (n / 3) * 4 + 12  # 3 ricerche in parallelo (~4 s ciascuna) + lettura pagine
-    estrazione = 20 if piano["intento"] == "ricerca" else 0
-    report = 45 if piano["intento"] == "ricerca" else 15
-    return {"ricerca": ricerca, "estrazione": estrazione, "report": report}
-
-
-def testo_attesa(secondi):
-    """'circa 1 minuto e 20 secondi', arrotondato a 10 secondi."""
-    secondi = max(10, int(secondi / 10.0 + 0.5) * 10)
-    if secondi < 60:
-        return f"circa {secondi} secondi"
-    m, sec = divmod(secondi, 60)
-    return f"circa {m} min" + (f" e {sec} s" if sec else "")
+# [TIMER - OPZIONE A SCELTA] Le stime di tempo statiche (stima_secondi / testo_attesa) sono state
+# RIMOSSE: erano imprecise perché i tempi reali dipendono da DuckDuckGo e da Gemini. Al loro posto
+# c'è un cronometro che conta i secondi trascorsi (vedi Avanzamento._cronometro).
+# Perché l'opzione A e non la B (stima fissa di ~5 minuti): non inventa nessun numero, quindi non può
+# mai essere sbagliata; gira nel browser (JavaScript) e non tocca il flusso Python della ricerca.
+# Se il cronometro non si carica, il resto dell'app funziona uguale (try/except).
 
 
 class Avanzamento:
-    """Riquadro di avanzamento disegnato dall'app in HTML: sfondo blu navy e testo bianco, sempre,
-    qualunque sia il tema di Streamlit (st.status prendeva i colori del tema, anche scuri)."""
+    """Riquadro di avanzamento disegnato dall'app in HTML: testo bianco su sfondo blu, sempre,
+    qualunque sia il tema di Streamlit (st.status prendeva i colori del tema, anche scuri).
+    Sotto il riquadro compare un cronometro in tempo reale (tempo trascorso) finché il lavoro è in corso."""
 
     def __init__(self, titolo):
         self.box = st.empty()
+        self.timer = st.empty()  # [TIMER] segnaposto del cronometro
         self.titolo, self.righe, self.fine = titolo, [], False
         self._disegna()
+        self._cronometro()
+
+    def _cronometro(self):
+        """[TIMER] Cronometro in tempo reale (secondi trascorsi), bianco su blu come il riquadro."""
+        try:
+            with self.timer:
+                components.html(
+                    f"""<div id="t" style="font:600 15px sans-serif;color:#FFFFFF;background:{BLU_AVANZ};
+                        border-radius:10px;padding:6px 14px;display:inline-block;">⏱️ Tempo trascorso: 0:00</div>
+                    <script>
+                    var s=Date.now();
+                    setInterval(function(){{
+                      var x=Math.floor((Date.now()-s)/1000);
+                      var m=Math.floor(x/60), r=x%60;
+                      document.getElementById('t').textContent='⏱️ Tempo trascorso: '+m+':'+(r<10?'0':'')+r;
+                    }},1000);
+                    </script>""",
+                    height=44,
+                )
+        except Exception:
+            pass  # il cronometro è solo un aiuto visivo: se non parte, l'app continua normalmente
 
     def __enter__(self):
         return self
@@ -352,18 +378,24 @@ class Avanzamento:
         if label:
             self.titolo = label
         self.fine = True
+        self.timer.empty()  # [TIMER] a lavoro finito il cronometro sparisce
         self._disegna()
 
     def _disegna(self):
+        # [FIX STILE] Testo bianco su blu: stile in linea + classe "cxi-avanz" (regola CSS più forte
+        # in alto nel file) così il colore del testo non può più essere sovrascritto dal tema.
         b = "color:#FFFFFF !important;"
-        stile = f"background:{NAVY};border-radius:10px;padding:.7rem 1rem;margin:.3rem 0;{b}"
-        elenco = "".join(f'<li style="{b}">{escape(r)}</li>' for r in self.righe)
-        lista = f'<ul style="margin:.4rem 0 0 1.1rem;{b}">{elenco}</ul>' if elenco else ""
+        stile = f"background:{BLU_AVANZ};border-radius:10px;padding:.7rem 1rem;margin:.3rem 0;{b}"
+        elenco = "".join(f'<li class="cxi-avanz" style="{b}">{escape(r)}</li>' for r in self.righe)
+        lista = (f'<ul class="cxi-avanz" style="margin:.4rem 0 0 1.1rem;{b}">{elenco}</ul>'
+                 if elenco else "")
         if self.fine:
-            html_ = (f'<details style="{stile}"><summary style="cursor:pointer;{b}">'
+            html_ = (f'<details class="cxi-avanz" style="{stile}">'
+                     f'<summary class="cxi-avanz" style="cursor:pointer;{b}">'
                      f'✅ {escape(self.titolo)}</summary>{lista}</details>')
         else:
-            html_ = f'<div style="{stile}"><b style="{b}">⏳ {escape(self.titolo)}</b>{lista}</div>'
+            html_ = (f'<div class="cxi-avanz" style="{stile}">'
+                     f'<b class="cxi-avanz" style="{b}">⏳ {escape(self.titolo)}</b>{lista}</div>')
         self.box.markdown(html_, unsafe_allow_html=True)
 
 
@@ -1016,6 +1048,7 @@ Numero minimo di aziende da proporre: {n}.
 ## REGOLE ANTI-ALLUCINAZIONE (OBBLIGATORIE)
 1. Ogni dato di fatto su un'azienda (sede, clienti, ricavi, dipendenti, M&A, notizie, iniziative) deve venire SOLO dalle EVIDENZE qui sotto e finire con il riferimento della fonte tra parentesi quadre, ad esempio [3] oppure [3, 7]. Non usare mai numeri o fatti dalla tua memoria.
 2. Indica sempre l'anno del dato (es. "4,6 mln di clienti, fine 2024"). Se il dato ha più di 2 anni, o viene da una sola fonte secondaria o aggregatore, scrivilo ("da aggiornare", "da confermare").
+   [HoQ EC1+EC2] Stato del dato, sempre dichiarato: "Verificato" solo se poggia su almeno 1 fonte primaria/ufficiale oppure su almeno 2 fonti secondarie concordanti; in ogni altro caso scrivi "Da confermare". Un dato non verificato porta sempre questa etichetta, mai omessa.
 3. Se un dato non è nelle evidenze scrivi "n.d.": non stimare e non modificare i numeri. Se per una parte della richiesta non c'è nulla di utile scrivi "Non ho trovato dati sufficienti" e spiega cosa manca.
 4. Includi un'azienda solo se le evidenze ne confermano l'esistenza e la pertinenza al settore e all'area richiesti. Non inventare nomi di persone, link o numeri di riferimento: usa solo gli ID delle evidenze.
 5. L'ESITO SOGLIA di ogni azienda è già calcolato dall'app nelle SCHEDE VERIFICATE: ricopialo senza modificarlo. Un dato "parziale" (ad esempio i clienti di una sola offerta o di una sola società del gruppo) non è il totale e non conferma la soglia. Le AZIENDE ESCLUSE non vanno proposte nelle tabelle: elencale nella sottosezione "Aziende Scartate" della sezione 1, con il motivo e il dato usato.
@@ -1028,7 +1061,7 @@ Numero minimo di aziende da proporre: {n}.
 Apri con una riga di riepilogo: quante aziende proponi e quante hanno dati completamente verificati.
 
 ### 1. Lista New Names
-Tabella con colonne: Azienda | Sede | Dimensione | Altri dati chiave | Verifica criteri | Fonte. In "Dimensione" ricopia il dato della scheda indicando metrica, anno e se è un dato parziale. Nella colonna "Sede" scrivi la sede della scheda e, se l'azienda ha la sede fuori dall'area richiesta ma ha uno stabilimento o una sede operativa NELL'area (dalle schede, con fonte), aggiungi tra parentesi lo stabilimento, ad esempio "Roma (stabilimento a Torino) [n]". La colonna "Verifica criteri" contiene SOLO due controlli: (a) "Sede": ✔ se la sede O uno stabilimento verificato è nell'area richiesta, ? se non ci sono dati di sede o stabilimento nell'area (non indovinare), ✘ se la sede è fuori area e le schede non riportano alcuno stabilimento in area; (b) la dimensione richiesta, scrivendo il nome della metrica ("Fatturato", "Ricavi" oppure "Clienti"): ricopia l'ESITO SOGLIA con ✔ (RISPETTATA), ? (da confermare) o ✘ (non rispettata). NON inserire in questa colonna altri criteri (BDC, volumi di contatto, visite private o altre esigenze). Nella colonna Fonte solo riferimenti [n]. A parità di punteggio mostra prima le aziende con sede nell'area. Ordina le righe per priorità (come nella sezione 2).
+Tabella con colonne: Azienda | Sede | Dimensione | Altri dati chiave | Verifica criteri | Fonte. In "Dimensione" ricopia il dato della scheda indicando metrica, anno e se è un dato parziale. Nella colonna "Sede" scrivi la sede della scheda e, se l'azienda ha la sede fuori dall'area richiesta ma ha uno stabilimento o una sede operativa NELL'area (dalle schede, con fonte), aggiungi tra parentesi lo stabilimento, ad esempio "Roma (stabilimento a Torino) [n]". La colonna "Verifica criteri" contiene SOLO due controlli: (a) "Sede": ✔ se la sede O uno stabilimento verificato è nell'area richiesta, ? se non ci sono dati di sede o stabilimento nell'area (non indovinare), ✘ se la sede è fuori area e le schede non riportano alcuno stabilimento in area; (b) la dimensione richiesta, scrivendo il nome della metrica ("Fatturato", "Ricavi" oppure "Clienti"): ricopia l'ESITO SOGLIA con ✔ (RISPETTATA), ? (da confermare) o ✘ (non rispettata). NON inserire in questa colonna altri criteri (BDC, volumi di contatto, visite private o altre esigenze). Nella colonna Fonte solo riferimenti [n]. [HoQ EC9] Ogni cella di tutte le tabelle: massimo 25 parole. A parità di punteggio mostra prima le aziende con sede nell'area. Ordina le righe per priorità (come nella sezione 2).
 
 Subito sotto la tabella scrivi due sottosezioni, con questi titoli in grassetto:
 **Priorità della richiesta**: elenco puntato delle esigenze specifiche indicate dall'utente nel testo (ad esempio presenza di BDC/BDM per l'automotive, visite private per la sanità, grandi volumi di contatti) e, per ciascuna, come le aziende proposte vi rispondono, con fatti verificati e fonte [n]. Se per un'azienda non c'è evidenza scrivi "non verificato": non inventare.
@@ -1544,28 +1577,19 @@ if prompt and prompt.strip():
             ricerche, evidenze, falliti, pagine = [], [], 0, 0
             info = info_schede_vuota()
             if piano["intento"] != "altro":
-                stime = stima_secondi(piano)
-                stato.write(f"⏱️ Tempo stimato totale: {testo_attesa(sum(stime.values()))} (è solo una stima).")
+                # [TIMER] niente più stime di tempo: il cronometro in tempo reale conta il tempo trascorso
                 if piano["candidati"]:
                     stato.write(
                         f"Verifico {len(piano['candidati'])} aziende candidate: "
                         + ", ".join(piano["candidati"])
                     )
-                stato.write(f"🔎 Ricerca di dati reali sul web (circa {testo_attesa(stime['ricerca'])})...")
-                t0 = time.time()
+                stato.write("🔎 Ricerca di dati reali sul web...")
                 evidenze, ricerche, falliti, pagine = esegui_ricerche(piano)
-                # adatta la stima del resto a quanto è stata veloce/lenta la ricerca
-                fattore = min(2.5, max(0.6, (time.time() - t0) / max(stime["ricerca"], 1)))
                 stato.write(f"Trovate {len(evidenze)} fonti, lette {pagine} pagine.")
                 if piano["intento"] == "ricerca" and evidenze:
-                    resto = (stime["estrazione"] + stime["report"]) * fattore
-                    stato.write(f"🧮 Estraggo e controllo i dati di ogni azienda (mancano {testo_attesa(resto)})...")
-                    t1 = time.time()
+                    stato.write("🧮 Estraggo e controllo i dati di ogni azienda...")
                     info = costruisci_schede(piano, evidenze, errori)
-                    fattore2 = min(2.5, max(0.6, (time.time() - t1) / max(stime["estrazione"], 1)))
-                    stato.write(f"✍️ Scrivo il report (mancano {testo_attesa(stime['report'] * max(fattore, fattore2))})...")
-                else:
-                    stato.write(f"✍️ Scrivo il report (mancano {testo_attesa(stime['report'] * fattore)})...")
+                stato.write("✍️ Scrivo il report...")
             stato.update(label="Ricerca completata", state="complete", expanded=False)
 
         if piano["intento"] != "altro" and len(evidenze) < 5:
