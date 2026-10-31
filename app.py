@@ -97,9 +97,9 @@ LOGO_PATH = "logo.png"      # logo CXI: in alto a sinistra nella barra laterale
 AVATAR_PATH = "agente.png"  # mascotte: avatar dell'assistente quando scrive
 
 NAVY = "#0B2545"
-# [FIX STILE] Blu più chiaro del navy per il riquadro di avanzamento: il navy scuro su molti schermi
-# sembra nero, e il testo blu non si leggeva. Con questo blu il testo bianco è ben leggibile.
-BLU_AVANZ = "#1D4F91"
+# [FIX STILE] Colore di sfondo del riquadro di avanzamento e del cronometro: di nuovo il blu navy di
+# prima. Il problema di leggibilità era il colore del TESTO (ora forzato bianco dalla classe .cxi-avanz).
+BLU_AVANZ = NAVY
 ORANGE = "#F26522"
 
 # Parametri della ricerca
@@ -401,6 +401,11 @@ class Avanzamento:
 
 def oggi_testo():
     return datetime.now(FUSO).strftime("%d/%m/%Y, ore %H:%M")
+
+
+def errore_quota(e):
+    """Il 429 di Google = quota esaurita: riprovare subito non serve a nulla."""
+    return "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
 
 
 def errore_temporaneo(e):
@@ -1136,8 +1141,14 @@ def genera_testo(contenuti, istruzioni, errori, usato):
                 if errore_temporaneo(e):
                     time.sleep(3 * (tentativo + 1))  # attende 3, 6 secondi e riprova
                     continue
-                break  # altri errori (quota, modello inesistente): passa al modello successivo
-    yield "⚠️ Nessun modello ha risposto. Riprova tra qualche minuto.\n\n" + "\n\n".join(errori)
+                break  # altri errori (quota 429, modello inesistente): niente nuovi tentativi, modello successivo
+    # [ERRORI] Messaggio breve e comprensibile (prima veniva mostrato l'intero elenco tecnico degli errori).
+    # I dettagli tecnici restano in `errori` e l'area principale li mostra in un riquadro a parte.
+    if any(errore_quota(x) for x in errori):
+        yield ("⚠️ La quota gratuita giornaliera di Gemini è esaurita. Riprova più tardi (la quota si "
+               "azzera ogni giorno) oppure attiva la fatturazione su Google AI Studio.")
+    else:
+        yield "⚠️ Nessun modello ha risposto (probabile sovraccarico momentaneo). Riprova tra qualche minuto."
 
 
 # -----------------------------------------------------------------------------
@@ -1484,12 +1495,13 @@ def crea_xlsx(m):
 
 
 def avatar(ruolo):
-    """Avatar: la mascotte (agente.png) per l'assistente, emoji per l'utente."""
+    """Avatar: la mascotte (agente.png) per l'assistente; il logo CXI (logo.png) per l'Account Manager
+    che scrive (al posto dell'omino). Se logo.png manca, resta l'emoji di prima."""
     if ruolo == "assistant":
         if os.path.exists(AVATAR_PATH):
             return AVATAR_PATH
         return LOGO_PATH if os.path.exists(LOGO_PATH) else "🧭"
-    return "🧑‍💼"
+    return LOGO_PATH if os.path.exists(LOGO_PATH) else "🧑‍💼"
 
 
 # =============================================================================
@@ -1609,6 +1621,15 @@ if prompt and prompt.strip():
         risposta = st.write_stream(
             genera_testo(a_contenuti(sessione["messaggi"], 6000), istruzioni, errori, usato)
         )
+        if not usato:
+            # [ERRORI] Nessun modello ha risposto: l'avviso resta a video ma NON viene salvato nella
+            # cronologia (né la domanda), così non finisce nei download né nelle chat successive.
+            with st.expander("Dettagli tecnici dell'errore"):
+                st.code("\n\n".join(errori)[:3000] or "n.d.")
+            sessione["messaggi"].pop()  # toglie la domanda rimasta senza risposta
+            if not sessione["messaggi"]:
+                sessione["titolo"] = "Nuova chat"
+            st.stop()
         fonti = costruisci_fonti(risposta, evidenze, titolo_fonti)
         if titolo_fonti:  # la nota finale la aggiunge l'app, sempre in fondo alla risposta
             fonti += "\n\n" + NOTA_FINALE
