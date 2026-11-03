@@ -574,10 +574,8 @@ def prepara_ricerche(piano):
         ricerche.append((nome, "text", q_dim))
         ricerche.append((nome, "text", f"{nome} sede legale stabilimenti sedi operative"))
         ricerche.append((nome, "news", f"{nome} acquisizione accordo novità {anno}"))
-        # fonti ufficiali e banche dati aziendali (solo frammenti dei risultati).
-        # [PRIORITÀ] Saltata per le aziende il cui fatturato è già arrivato dalla ricerca Google (vedi sotto).
-        if nome not in piano.get("saltare_banche_dati", ()):
-            ricerche.append((nome, "text", f"{nome} {SITI_BANCHE_DATI}"))
+        # fonti ufficiali e banche dati aziendali (solo frammenti dei risultati)
+        ricerche.append((nome, "text", f"{nome} {SITI_BANCHE_DATI}"))
     # elenchi e rapporti di settore di Confindustria
     if piano["query_scoperta"]:
         ricerche.append(("Scoperta", "text", f"{piano['query_scoperta'][0]} site:confindustria.it"))
@@ -731,7 +729,7 @@ def priorita_non_fatturato(piano):
 
 def cerca_dato_su_google(piano, ultimo_id, errori):
     """[PRIORITÀ] UNA sola ricerca (chiamata a Gemini con la ricerca Google attiva) per trovare il dato richiesto
-    (es. il numero di clienti) e il fatturato di tutte le aziende candidate. Ogni riga diventa un'evidenza in più: con l'URL
+    (es. il numero di clienti) di tutte le aziende candidate. Ogni riga diventa un'evidenza in più: con l'URL
     della fonte se Gemini la indica; senza fonte il dato entra lo stesso, segnato come "dato parziale" e con un
     link di ricerca Google al posto della fonte. Non solleva eccezioni."""
     try:
@@ -740,14 +738,12 @@ def cerca_dato_su_google(piano, ultimo_id, errori):
             f"Oggi è {oggi_testo()}. Usa la ricerca Google per trovare il dato più recente richiesto dall'utente: "
             f"«{piano['soglia']}». Cercalo per ciascuna di queste aziende: {nomi}.\n"
             "Dai la precedenza a fonti ufficiali (sito dell'azienda, bilancio o relazione annuale, comunicati) e alla "
-            "stampa economica affidabile. Non stimare nulla.\n"
-            "Per OGNI azienda scrivi DUE righe, senza altro testo, in questo formato esatto:\n"
-            "1) Azienda | valore del dato richiesto come scritto nella fonte, con l'unità | anno del dato | "
-            "totale oppure parziale | frase della fonte che contiene il dato\n"
-            "2) Azienda | fatturato: valore dei ricavi consolidati del gruppo, con l'unità | anno | "
-            "totale oppure parziale | frase della fonte che contiene il dato\n"
-            "(totale = dato dell'intero gruppo, consolidato; parziale = riguarda solo una parte: un'offerta, una "
-            "società, un'area). Se non trovi un dato scrivi: Azienda | n.d. | | |"
+            "stampa economica affidabile. Non usare il fatturato al posto di questo dato e non stimare nulla.\n"
+            "Rispondi SOLO con una riga per azienda, senza altro testo, in questo formato esatto:\n"
+            "Azienda | valore come scritto nella fonte, con l'unità | anno del dato | totale oppure parziale | "
+            "frase della fonte che contiene il dato\n"
+            "(totale = dato dell'intero gruppo; parziale = riguarda solo una parte: un'offerta, una società, un'area). "
+            "Se non trovi il dato scrivi: Azienda | n.d. | | |"
         )
         client = genai.Client(api_key=api_key)
         config = types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())])
@@ -807,7 +803,6 @@ def cerca_dato_su_google(piano, ultimo_id, errori):
                 "titolo": f"{nome}: dato da ricerca Google (Gemini)" + (", fonte non indicata" if senza_fonte else ""),
                 "testo": f"{nome}: {celle[1]} ({celle[2]}{ambito}). {frase}"[:450],
                 "url": url, "data": "", "dominio": dominio, "estratto": "", "senza_fonte": senza_fonte,
-                "fatturato": celle[1].lower().startswith("fatturato"),
             })
         return evid
     except Exception as e:  # il flusso prosegue come prima, solo senza queste evidenze in più
@@ -1714,24 +1709,16 @@ if prompt and prompt.strip():
                         f"Verifico {len(piano['candidati'])} aziende candidate: "
                         + ", ".join(piano["candidati"])
                     )
-                extra = []
-                if priorita_non_fatturato(piano):
-                    # [PRIORITÀ] il criterio principale non è il fatturato: il dato richiesto (es. numero di
-                    # clienti) e il fatturato si cercano direttamente con Google tramite Gemini. Per le aziende
-                    # di cui il fatturato è arrivato così si evitano le ricerche sulle banche dati; per le altre
-                    # restano, come prima.
-                    stato.write(f"🎯 Cerco con Google il dato richiesto ({piano['soglia']}) e il fatturato...")
-                    extra = cerca_dato_su_google(piano, 0, errori)
-                    piano["saltare_banche_dati"] = {e["tag"] for e in extra
-                                                    if e.get("fatturato") and not e.get("senza_fonte")}
                 stato.write("🔎 Ricerca di dati reali sul web...")
                 evidenze, ricerche, falliti, pagine = esegui_ricerche(piano)
                 if priorita_non_fatturato(piano):
-                    for k, e in enumerate(extra, len(evidenze) + 1):  # gli id proseguono dopo quelli del web
-                        e["id"] = k
+                    # [PRIORITÀ] il criterio principale non è il fatturato: il dato richiesto (es. numero di
+                    # clienti) si cerca direttamente con Google tramite Gemini e si aggiunge alle evidenze.
+                    stato.write(f"🎯 Cerco con Google il dato richiesto: {piano['soglia']}...")
+                    extra = cerca_dato_su_google(piano, len(evidenze), errori)
                     evidenze += extra
-                    ricerche.append(("Scoperta", "google", f"Dato richiesto «{piano['soglia']}» e fatturato per le aziende candidate"))
-                    stato.write(f"Dati da ricerca Google: {len(extra)} (dato richiesto e fatturato).")
+                    ricerche.append(("Scoperta", "google", f"Dato richiesto «{piano['soglia']}» per le aziende candidate"))
+                    stato.write(f"Dato richiesto trovato con fonte per {len(extra)} aziende.")
                 stato.write(f"Trovate {len(evidenze)} fonti, lette {pagine} pagine.")
                 if piano["intento"] == "ricerca" and evidenze:
                     stato.write("🧮 Estraggo e controllo i dati di ogni azienda...")
