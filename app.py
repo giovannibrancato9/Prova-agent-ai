@@ -560,12 +560,45 @@ def normalizza_piano(grezzo, richiesta):
 SITI_BANCHE_DATI = "(site:ufficiocamerale.it OR site:atoka.io OR site:reportaziende.it)"
 
 
+def metrica_e_fatturato(piano):
+    """True se il vincolo di dimensione richiesto dall'utente è il fatturato/ricavi."""
+    return piano["tipo_dimensione"] in ("fatturato", "ricavi")
+
+
+def nome_metrica(piano, maiuscola=False):
+    """Nome leggibile della metrica richiesta, per i testi mostrati o passati a Gemini."""
+    nomi = {"clienti": "clienti", "fatturato": "fatturato", "ricavi": "ricavi"}
+    n = nomi.get(piano["tipo_dimensione"], "dimensione")
+    return n.capitalize() if maiuscola else n
+
+
+def _parola_ricerca_metrica(piano):
+    """La parola da aggiungere alle query quando si conosce il nome esatto della metrica
+    (es. 'clienti'). Per 'altro' non si inventa una parola di ricerca: non sappiamo cosa
+    l'utente intenda davvero (posti letto, punti vendita...), e una parola sbagliata
+    peggiorerebbe la ricerca invece di aiutarla."""
+    return "clienti" if piano["tipo_dimensione"] == "clienti" else None
+
+
+def _query_fonti_dimensione(piano, nome):
+    """La 4a ricerca per azienda. Se il vincolo è il fatturato, le banche dati aziendali
+    (Atoka, Ufficio Camerale, Reportaziende) sono la fonte giusta. Altrimenti (clienti, o
+    un'altra metrica) quelle banche dati raramente la riportano: si cerca invece sul sito
+    ufficiale dell'azienda e negli articoli di stampa economica/di settore, dove notizie e
+    comunicati con dati come il numero di clienti compaiono più spesso."""
+    if metrica_e_fatturato(piano):
+        return (nome, "text", f"{nome} {SITI_BANCHE_DATI}")
+    parola = _parola_ricerca_metrica(piano)
+    extra = f'"{parola}" ' if parola else ""
+    return (nome, "text", f"{nome} {extra}comunicato stampa sito ufficiale dati aggiornati")
+
+
 def prepara_ricerche(piano):
     """Elenco di ricerche: (etichetta, tipo, query). 'Scoperta' = elenchi e classifiche di settore."""
     anno = datetime.now(FUSO).year
     ricerche = [("Scoperta", "text", q) for q in piano["query_scoperta"]]
     for nome in piano["candidati"]:
-        if piano["tipo_dimensione"] in ("fatturato", "ricavi"):
+        if metrica_e_fatturato(piano):
             q_dim = f"{nome} fatturato ricavi {anno - 1}"
         elif piano["tipo_dimensione"] == "clienti":
             q_dim = f"{nome} numero di clienti {anno - 1}"
@@ -573,9 +606,12 @@ def prepara_ricerche(piano):
             q_dim = f"{nome} dimensione azienda dati {anno - 1}"
         ricerche.append((nome, "text", q_dim))
         ricerche.append((nome, "text", f"{nome} sede legale stabilimenti sedi operative"))
-        ricerche.append((nome, "news", f"{nome} acquisizione accordo novità {anno}"))
-        # fonti ufficiali e banche dati aziendali (solo frammenti dei risultati)
-        ricerche.append((nome, "text", f"{nome} {SITI_BANCHE_DATI}"))
+        # quando il vincolo è una metrica precisa e diversa dal fatturato (es. "clienti"),
+        # la notizia cerca anche quella parola: gli annunci di crescita clienti sono spesso solo lì
+        parola = _parola_ricerca_metrica(piano)
+        parola_news = f" {parola}" if parola else ""
+        ricerche.append((nome, "news", f"{nome} acquisizione accordo novità{parola_news} {anno}"))
+        ricerche.append(_query_fonti_dimensione(piano, nome))
     # elenchi e rapporti di settore di Confindustria
     if piano["query_scoperta"]:
         ricerche.append(("Scoperta", "text", f"{piano['query_scoperta'][0]} site:confindustria.it"))
@@ -781,7 +817,8 @@ Regole:
 - "valore" della dimensione: copia il numero esattamente come scritto nella citazione (es. "800.000" oppure "4,6 milioni"), senza convertirlo.
 - Dimensione richiesta dall'utente: {piano["tipo_dimensione"]}. Usa "metrica": "clienti" se il numero indica clienti, "fatturato" per ricavi o fatturato. "ambito": "totale" SOLO se il numero è la base clienti (o i ricavi) complessiva dell'azienda, cioè i ricavi CONSOLIDATI del gruppo; "parziale" se riguarda un sottoinsieme (clienti di una sola offerta, nuovi clienti dell'anno, clienti di una sola società, area, divisione o prodotto del gruppo) oppure il bilancio della sola società capogruppo/d'esercizio quando esiste un consolidato (es. "Leonardo S.p.A." singola contro "Gruppo Leonardo"), oppure ordini, EBITDA o utile al posto dei ricavi. Se il numero vale 0 o è chiaramente un dato mancante (es. "0,00" nelle banche dati), metti null: non è un fatturato. Se il valore è incoerente con le altre evidenze (es. fatturato zero con centinaia di dipendenti, o valori molto diversi per lo stesso anno), scegli il consolidato più autorevole oppure null.
 - ATTENZIONE ai dati di una sola società: le banche dati (Atoka, Ufficio Camerale, Reportaziende) mostrano spesso i ricavi di UNA SINGOLA società giuridica (holding, capogruppo, società con pochi dipendenti), che può essere molto più piccola del gruppo; anche un nome come "Gruppo X S.p.A." non garantisce che sia il consolidato. Se articoli, comunicati o bilanci consolidati danno un fatturato di gruppo molto diverso, usa il dato di gruppo come "dimensione" e metti l'altro in "altre_dimensioni" (con "ambito": "parziale"). Riporta SEMPRE l'unità come scritta nella fonte ("migliaia", "milioni", "mld"): non convertire e non omettere l'unità.
-- Se ci sono più valori per la stessa azienda, scegli il più recente e autorevole (comunicato ufficiale, bilancio, stampa economica); a parità di anno dai la precedenza alle evidenze marcate FONTE UFFICIALE/BANCA DATI (Confindustria, Ufficio Camerale, Atoka, Reportaziende). Questi siti spesso mostrano solo fasce o dati parziali: se il valore è una fascia o riguarda solo una parte, usa "ambito": "parziale".
+- [PRIORITÀ ALLA METRICA RICHIESTA] La dimensione richiesta dall'utente è "{piano["tipo_dimensione"]}": nel campo "dimensione" metti SEMPRE, quando esiste nelle evidenze, un valore di QUESTA metrica, anche se per la stessa azienda trovi un numero di un'altra metrica (tipicamente il fatturato) più facile da leggere o più autorevole. Un fatturato non vale come sostituto del numero di clienti richiesto, e viceversa: se la metrica richiesta manca, "dimensione" resta null (il dato è n.d.), e un eventuale valore di un'altra metrica va solo in "altre_dimensioni", mai in "dimensione".
+- Se ci sono più valori della STESSA metrica per la stessa azienda, scegli il più recente e autorevole (comunicato ufficiale, bilancio, stampa economica); a parità di anno dai la precedenza alle evidenze marcate FONTE UFFICIALE/BANCA DATI (Confindustria, Ufficio Camerale, Atoka, Reportaziende) quando la metrica è il fatturato, o a comunicati stampa e articoli di stampa economica/di settore quando la metrica è un'altra (quelle banche dati raramente riportano dati diversi dal fatturato). Questi siti spesso mostrano solo fasce o dati parziali: se il valore è una fascia o riguarda solo una parte, usa "ambito": "parziale".
 - Sede: città o indirizzo della sede legale o principale dell'azienda che vende.
 - "stabilimenti": fino a 4 stabilimenti, sedi operative o punti vendita dell'azienda, in particolare nell'area geografica richiesta (criteri della richiesta: {area}), ciascuno con la frase della fonte che lo conferma; lista vuota se non ce ne sono nelle evidenze.
 - "notizie": fino a 3 fatti recenti (acquisizioni, accordi, nuove offerte, rebranding, aperture, governance). "tipo": "clienti" se riguarda vendita, clienti, offerte o canali di contatto e assistenza; "infrastruttura" se riguarda reti, impianti o produzione senza effetto diretto sul rapporto con i clienti; "altro" negli altri casi.
