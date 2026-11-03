@@ -42,7 +42,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from html import escape
 from io import BytesIO
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import streamlit as st
@@ -721,95 +721,6 @@ def esegui_ricerche(piano):
         return [], ricerche, len(ricerche), 0
 
 
-def priorita_non_fatturato(piano):
-    """[PRIORITÀ] True se il criterio principale della richiesta NON è il fatturato (es. "500.000 clienti")."""
-    return (piano.get("intento") == "ricerca" and piano.get("tipo_dimensione") not in ("fatturato", "ricavi")
-            and bool(str(piano.get("soglia") or "").strip()) and bool(piano.get("candidati")))
-
-
-def cerca_dato_su_google(piano, ultimo_id, errori):
-    """[PRIORITÀ] UNA sola ricerca (chiamata a Gemini con la ricerca Google attiva) per trovare il dato richiesto
-    (es. il numero di clienti) di tutte le aziende candidate. Ogni riga diventa un'evidenza in più: con l'URL
-    della fonte se Gemini la indica; senza fonte il dato entra lo stesso, segnato come "dato parziale" e con un
-    link di ricerca Google al posto della fonte. Non solleva eccezioni."""
-    try:
-        nomi = ", ".join(piano["candidati"])
-        prompt = (
-            f"Oggi è {oggi_testo()}. Usa la ricerca Google per trovare il dato più recente richiesto dall'utente: "
-            f"«{piano['soglia']}». Cercalo per ciascuna di queste aziende: {nomi}.\n"
-            "Dai la precedenza a fonti ufficiali (sito dell'azienda, bilancio o relazione annuale, comunicati) e alla "
-            "stampa economica affidabile. Non usare il fatturato al posto di questo dato e non stimare nulla.\n"
-            "Rispondi SOLO con una riga per azienda, senza altro testo, in questo formato esatto:\n"
-            "Azienda | valore come scritto nella fonte, con l'unità | anno del dato | totale oppure parziale | "
-            "frase della fonte che contiene il dato\n"
-            "(totale = dato dell'intero gruppo; parziale = riguarda solo una parte: un'offerta, una società, un'area). "
-            "Se non trovi il dato scrivi: Azienda | n.d. | | |"
-        )
-        client = genai.Client(api_key=api_key)
-        config = types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())])
-        risposta = None
-        for modello in MODELLI_PIANO:  # prima il modello leggero: non consuma la quota di quello del report
-            for tentativo in range(3):
-                try:
-                    risposta = client.models.generate_content(model=modello, contents=prompt, config=config)
-                    break
-                except Exception as e:
-                    errori.append(f"{modello} (ricerca Google, tentativo {tentativo + 1}): {e}")
-                    if errore_temporaneo(e):
-                        time.sleep(5 * (tentativo + 1))
-                        continue
-                    break
-            if risposta:
-                break
-        if not risposta or not risposta.candidates:
-            return []
-        testo = risposta.text or ""
-        meta = risposta.candidates[0].grounding_metadata
-        chunks = list(getattr(meta, "grounding_chunks", None) or [])
-        supporti = list(getattr(meta, "grounding_supports", None) or [])
-        evid, pos = [], 0
-        for riga in testo.split("\n"):
-            inizio, fine = pos, pos + len(riga.encode("utf-8"))  # gli indici di Gemini sono in byte
-            pos = fine + 1
-            celle = [c.strip() for c in riga.strip(" -*").split("|")]
-            if len(celle) < 3 or not celle[1] or celle[1].lower().startswith("n.d") or re.fullmatch(r"[-: ]+", celle[1]):
-                continue
-            nome = next((n for n in piano["candidati"] if _norm(celle[0]) and (
-                _norm(n) in _norm(celle[0]) or _norm(celle[0]) in _norm(n))), None)
-            if not nome:
-                continue
-            indici = [i for s in supporti if s.segment and (s.segment.start_index or 0) < fine
-                      and (s.segment.end_index or 0) > inizio for i in (s.grounding_chunk_indices or [])]
-            web = next((chunks[i].web for i in indici if i < len(chunks) and chunks[i].web and chunks[i].web.uri), None)
-            senza_fonte = web is None
-            url = web.uri if web else "https://www.google.com/search?q=" + quote_plus(f"{nome} {piano['soglia']}")
-            if requests and web:  # l'indirizzo di Google è un reindirizzamento: si risale al sito vero
-                try:
-                    r = requests.get(url, allow_redirects=True, timeout=6, stream=True,
-                                     headers={"User-Agent": "Mozilla/5.0 (compatible; CXI-PreSales-Agent)"})
-                    url = r.url
-                    r.close()
-                except Exception:
-                    pass
-            dominio = urlparse(url).netloc.replace("www.", "")
-            if web and "google" in dominio:
-                dominio = web.title or dominio
-            ambito = f", dato {celle[3]}" if len(celle) > 3 and celle[3] else ""
-            if senza_fonte:
-                ambito = ", dato parziale: fonte non indicata"
-            frase = " | ".join(celle[4:]) if len(celle) > 4 else ""
-            evid.append({
-                "id": ultimo_id + len(evid) + 1, "ufficiale": False, "tag": nome, "tipo": "text",
-                "titolo": f"{nome}: dato da ricerca Google (Gemini)" + (", fonte non indicata" if senza_fonte else ""),
-                "testo": f"{nome}: {celle[1]} ({celle[2]}{ambito}). {frase}"[:450],
-                "url": url, "data": "", "dominio": dominio, "estratto": "", "senza_fonte": senza_fonte,
-            })
-        return evid
-    except Exception as e:  # il flusso prosegue come prima, solo senza queste evidenze in più
-        errori.append(f"ricerca Google: {e}")
-        return []
-
-
 def testo_evidenze(evidenze):
     """Le evidenze in forma di testo numerato, da passare a Gemini."""
     if not evidenze:
@@ -1017,11 +928,10 @@ def valida_schede(grezzo, evidenze):
                 "valore": str(dim["valore"]).strip(),
                 "metrica": dim.get("metrica") if dim.get("metrica") in ("clienti", "fatturato") else "altro",
                 "anno": str(dim.get("anno") or "").strip(),
-                # [PRIORITÀ] un dato trovato senza fonte (ricerca Google) è sempre "parziale"
-                "ambito": "totale" if dim.get("ambito") == "totale" and not per_id[i].get("senza_fonte") else "parziale",
+                "ambito": "totale" if dim.get("ambito") == "totale" else "parziale",
                 "id": i,
             }
-        altre =a.get("altre_dimensioni") if isinstance(a.get("altre_dimensioni"), list) else []
+        altre = a.get("altre_dimensioni") if isinstance(a.get("altre_dimensioni"), list) else []
         for alt in altre[:2]:
             i = controlla(alt, "valore")
             if i and not valore_nullo(alt.get("valore")):
@@ -1711,14 +1621,6 @@ if prompt and prompt.strip():
                     )
                 stato.write("🔎 Ricerca di dati reali sul web...")
                 evidenze, ricerche, falliti, pagine = esegui_ricerche(piano)
-                if priorita_non_fatturato(piano):
-                    # [PRIORITÀ] il criterio principale non è il fatturato: il dato richiesto (es. numero di
-                    # clienti) si cerca direttamente con Google tramite Gemini e si aggiunge alle evidenze.
-                    stato.write(f"🎯 Cerco con Google il dato richiesto: {piano['soglia']}...")
-                    extra = cerca_dato_su_google(piano, len(evidenze), errori)
-                    evidenze += extra
-                    ricerche.append(("Scoperta", "google", f"Dato richiesto «{piano['soglia']}» per le aziende candidate"))
-                    stato.write(f"Dato richiesto trovato con fonte per {len(extra)} aziende.")
                 stato.write(f"Trovate {len(evidenze)} fonti, lette {pagine} pagine.")
                 if piano["intento"] == "ricerca" and evidenze:
                     stato.write("🧮 Estraggo e controllo i dati di ogni azienda...")
